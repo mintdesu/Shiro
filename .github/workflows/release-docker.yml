@@ -1,47 +1,113 @@
-name: Docker (release)
+name: Docker (Main Branch)
 
 on:
+  workflow_dispatch:
   push:
-    # Sequence of patterns matched against refs/tags
-    tags:
-      - 'v*' # Push events to matching v*, i.e. v1.0, v20.15.10
+    branches:
+      - main
+
+  repository_dispatch:
+    types: [trigger-workflow]
+    
+permissions: write-all
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PNPM_VERSION: 9.x.x
+  HASH_FILE: path/to/hash/file.txt
 
 jobs:
-  docker:
+  prepare:
+    name: Prepare
     runs-on: ubuntu-latest
+    if: ${{ github.event.head_commit.message != 'Update hash file' }}
+
+    outputs:
+      hash_content: ${{ steps.read_hash.outputs.hash_content }}
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-      - name: Login to Docker Hub
-        uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - name: Read HASH_FILE content
+        id: read_hash
+        run: |
+          content=$(cat ${{ env.HASH_FILE }}) || true
+          echo "hash_content=$content" >> "$GITHUB_OUTPUT"
+  check:
+    name: Check Should Rebuild
+    runs-on: ubuntu-latest
+    needs: prepare
+    outputs:
+      canceled: ${{ steps.use_content.outputs.canceled }}
 
-      - name: Docker meta
-        id: meta
-        uses: docker/metadata-action@v5
+    steps:
+      - uses: actions/checkout@v4
         with:
-          images: |
-            innei/shiro
-          tags: |
-            type=ref,event=branch
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=semver,pattern={{major}}
-            type=sha
-            type=raw,value=latest
-      - name: Build and export to Docker
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          load: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          push: true
+          fetch-depth: 0
+          lfs: true
+
+      - name: Use content from prev job and compare
+        id: use_content
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          FILE_HASH: ${{ needs.prepare.outputs.hash_content }}
+        run: |
+          file_hash=$FILE_HASH
+          current_hash=$(git rev-parse --short HEAD)
+          echo "File Hash: $file_hash"
+          echo "Current Git Hash: $current_hash"
+          if [ "$file_hash" == "$current_hash" ]; then
+            echo "Hashes match. Stopping workflow."
+            echo "canceled=true" >> $GITHUB_OUTPUT
+          else
+            echo "Hashes do not match. Continuing workflow."
+          fi
+
+  build:
+    name: Build artifact
+    runs-on: ubuntu-latest
+    needs: check
+    if: ${{needs.check.outputs.canceled != 'true'}}
+    
+    outputs:
+      sha_short: ${{ steps.store.outputs.sha_short }}
+      branch: ${{ steps.store.outputs.branch }}
+      
+    steps:
+    - uses: actions/checkout@v4
+      with: 
+        fetch-depth: 0
+        lfs: true
+
+    - name: Login to Registry
+      uses: docker/login-action@v3
+      with:
+        registry: ghcr.io
+        username: ${{ github.actor }}
+        password: ${{ secrets.GH_TOKEN }}
+
+    - name: Store artifact commit version
+      shell: bash
+      id: store
+      run: |
+        sha_short=$(git rev-parse --short HEAD)
+        branch_name=$(git rev-parse --abbrev-ref HEAD)
+        echo "sha_short=$sha_short" >> "$GITHUB_OUTPUT"
+        echo "branch=$branch_name" >> "$GITHUB_OUTPUT"
+
+    - name: Build Docker Image
+      run: |
+        docker build -t ghcr.io/mintdesu/shiro:${{ steps.store.outputs.sha_short }} .
+  
+    - name: Push Docker Image to Github
+      run: |
+        docker push ghcr.io/mintdesu/shiro:${{ steps.store.outputs.sha_short }}
+  
+    - name: Tag Docker Image as latest
+      run: |
+        docker tag ghcr.io/mintdesu/shiro:${{ steps.store.outputs.sha_short }} ghcr.io/mintdesu/shiro:latest
+  
+    - name: Push Docker Image as latest
+      run: |
+        docker push ghcr.io/mintdesu/shiro:latest
