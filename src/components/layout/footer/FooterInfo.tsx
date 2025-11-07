@@ -212,9 +212,17 @@ const FooterBottom = async () => {
             <StyledLink href={icp.link} target="_blank" rel="noreferrer">
               {icp.text}
             </StyledLink>
+            <Divider className="hidden md:inline" />
+            <StyledLink href="https://beian.mps.gov.cn/#/query/webSearch?code=34030002001158" target="_blank" rel="noreferrer">
+              皖公网安备34030002001158号
+            </StyledLink>
+            <Divider className="hidden md:inline" />
+            <StyledLink href="https://icp.gov.moe/?keyword=20238620" target="_blank" rel="noreferrer">
+              萌ICP备20238620号
+            </StyledLink>
           </>
         )}
-
+        
         {icp ? (
           <Divider className="inline" />
         ) : (
